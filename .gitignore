@@ -1,0 +1,44 @@
+# Godot 4+ specific ignores
+.godot/
+
+# Godot 3.x / older ignores
+.import/
+export.cfg
+export_presets.cfg
+
+# Imported translations (automatically generated from CSV files)
+*.translation
+
+# Mono-specific ignores
+.mono/
+data_*/
+mono_crash.*.json
+
+# System/OS-specific ignores
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / Editor ignores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build & Export outputs
+builds/
+build/
+export/
+exports/
+*.exe
+*.pck
+*.x86_64
+*.arm64
+*.apk
+*.aab
+*.ipa
+*.dmg
+*.app/
+*.wasm
+*.js
+*.html
