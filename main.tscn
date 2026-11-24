@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" uid="uid://qyju7u1wh382" path="res://main.gd" id="1_0xm2m"]
 [ext_resource type="PackedScene" uid="uid://5wphup0p5nxt" path="res://generic_suv_v_4_lights.tscn" id="1_ig7tw"]
+[ext_resource type="Texture2D" uid="uid://dpqeuiu4rkara" path="res://BG/jeep_auto.png" id="3_h2yge"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_s5ywu"]
 
@@ -11,6 +12,13 @@ sky_material = SubResource("ProceduralSkyMaterial_s5ywu")
 [sub_resource type="Environment" id="Environment_i0lpj"]
 background_mode = 2
 sky = SubResource("Sky_dkgkh")
+
+[sub_resource type="QuadMesh" id="QuadMesh_6oign"]
+size = Vector2(2, 2)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_i0lpj"]
+shading_mode = 0
+albedo_texture = ExtResource("3_h2yge")
 
 [node name="Main" type="Node3D" unique_id=1889879155]
 script = ExtResource("1_0xm2m")
@@ -27,5 +35,11 @@ environment = SubResource("Environment_i0lpj")
 transform = Transform3D(0.14993028, 0.027241988, -0.9883211, 0.0139560355, 0.9994624, 0.029666243, 0.98859805, -0.018240912, 0.14946948, 0, 0, 0)
 
 [node name="Camera3D" type="Camera3D" parent="CameraPivot" unique_id=180751314]
-transform = Transform3D(-4.371139e-08, -0.08715574, 0.9961947, 0, 0.9961947, 0.08715574, -1, 3.8096983e-09, -4.3545054e-08, 3, 1.5, 0)
+transform = Transform3D(-0.34442782, -0.08501636, 0.93495554, 0.0326586, 0.9942034, 0.10243492, -0.9382447, 0.06581577, -0.3396548, -119.47723, 32.058064, -679.30273)
 current = true
+fov = 106.5
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1494738010]
+transform = Transform3D(5, 0, 0, 0, 5, 0, 0, 0, 5, 0, 2, 0)
+mesh = SubResource("QuadMesh_6oign")
+surface_material_override/0 = SubResource("StandardMaterial3D_i0lpj")

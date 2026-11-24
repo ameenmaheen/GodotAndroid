@@ -5,9 +5,11 @@ signal camera_panel_visibility_changed(visible: bool)
 signal door_state_changed(door_name: String, open: bool)
 signal auto_rotate_changed(enabled: bool)
 signal zoom_changed(fov: float)
+signal paint_color_changed(color: Color)
 
 @onready var pivot: Node3D = $CameraPivot
 @onready var cam: Camera3D = $CameraPivot/Camera3D
+@onready var bg: MeshInstance3D = $MeshInstance3D
 
 const TAP_THRESHOLD := 12.0
 const FOCUS_DURATION := 0.7
@@ -16,10 +18,28 @@ const AUTO_ROTATE_SPEED := 0.35 # radians per second
 const MIN_CAMERA_FOV := 25.0
 const MAX_CAMERA_FOV := 75.0
 
+# Background (camera-locked so orbiting the car never moves it).
+const BG_DISTANCE := 30.0   # how far in front of the camera the backdrop sits
+const BG_ZOOM := 1.3        # >1 enlarges the image (gives room to shift it)
+const BG_SHIFT_UP := 0.12   # fraction of screen height to move the image up
+
+# Paint: exact material name(s) from the GLB. Add "Generic_gloss_black_trim"
+# to also paint the roof / black trim.
+const PAINT_MATERIAL_NAMES := ["Generic_body_paint"]
+const PAINT_COLORS := {
+	"Exotica Red": Color("821517"),
+	"Galaxy Blue": Color("26457a"),
+	"Grigio Magnesio Grey": Color("676A6A"),
+	"Pearl White": Color("F5F7E3"),
+	"Silvery Moon": Color("CED0D3"),
+	"Techno Green Metallic": Color("69ac58"),
+	"Forest green": Color("1f5a3a"),
+	"Sunset orange": Color("e0661a"),
+}
+
 # GLB coordinates: vehicle front is +Z; steering wheel is on X+ side.
 const CAMERA_PRESETS := {
-	"overview": {"target": Vector3(0.0, 0.90, -0.02), "offset": Vector3(3.55, 2.05, 3.85), "fov": 42.0},
-	"side": {"target": Vector3(0.0, 0.88, 0.0), "offset": Vector3(6.2, 1.45, 0.0), "fov": 42.0},
+"overview": {"target": Vector3(0.0, 0.90, -0.02), "offset": Vector3(4.01, 2.32, 4.35), "fov": 42.0},	"side": {"target": Vector3(0.0, 0.88, 0.0), "offset": Vector3(6.2, 1.45, 0.0), "fov": 42.0},
 	"front": {"target": Vector3(0.0, 0.92, 1.83), "offset": Vector3(0.0, 1.15, 4.8), "fov": 43.0},
 	"tire_fl": {"target": Vector3(0.76, 0.36, 1.27), "offset": Vector3(1.35, 0.58, 0.62), "fov": 39.0},
 	"tire_fr": {"target": Vector3(-0.75, 0.36, 1.28), "offset": Vector3(-1.35, 0.58, 0.62), "fov": 39.0},
@@ -62,11 +82,19 @@ var _zoom_value_label: Label
 var _auto_rotate_check: CheckBox
 var _android_bridge: Object
 
+var _paint_mats: Array[BaseMaterial3D] = []
+var _paint_shared: Dictionary = {}   # original material -> one shared copy
+var _paint_color := Color("b3121c")
+var _color_tween: Tween
+
 
 func _ready() -> void:
 	_create_camera_controls()
+	set_camera_panel_visible(false)
 	_connect_android_bridge()
+	_collect_paint_materials()
 	_focus_view("overview", false)
+	_attach_background_to_camera()
 
 
 func _process(delta: float) -> void:
@@ -75,6 +103,7 @@ func _process(delta: float) -> void:
 	if _auto_rotate:
 		pivot.rotate_y(AUTO_ROTATE_SPEED * delta)
 	cam.look_at(pivot.global_position, Vector3.UP)
+	_fit_background_to_screen()
 	if is_instance_valid(_zoom_slider):
 		_zoom_slider.set_value_no_signal(cam.fov)
 		if is_instance_valid(_zoom_value_label):
@@ -143,6 +172,93 @@ func rotate_camera(horizontal_delta: float, vertical_delta: float = 0.0) -> void
 
 func get_current_view() -> String:
 	return _current_view
+
+
+# -----------------------------------------------------------------------------
+# Background: parented to the camera so it stays fixed on screen while the
+# camera orbits the car, and scaled to always cover the screen.
+# -----------------------------------------------------------------------------
+
+func _attach_background_to_camera() -> void:
+	if not is_instance_valid(bg) or not is_instance_valid(cam):
+		return
+	bg.reparent(cam, false)        # false: discard the old world transform
+	bg.rotation = Vector3.ZERO     # face the camera exactly
+	bg.position = Vector3(0.0, 0.0, -BG_DISTANCE)
+	_fit_background_to_screen()
+
+
+func _fit_background_to_screen() -> void:
+	if not is_instance_valid(bg) or not is_instance_valid(cam) or bg.mesh == null:
+		return
+	var vp_size := get_viewport().get_visible_rect().size
+	if vp_size.y <= 0.0:
+		return
+	var view_h := 2.0 * BG_DISTANCE * tan(deg_to_rad(cam.fov * 0.5))
+	var view_w := view_h * (vp_size.x / vp_size.y)
+	var mesh_size := bg.mesh.get_aabb().size
+	if mesh_size.x <= 0.0 or mesh_size.y <= 0.0:
+		return
+	var s := maxf(view_w / mesh_size.x, view_h / mesh_size.y) * BG_ZOOM
+	bg.scale = Vector3(s, s, s)
+	bg.position = Vector3(0.0, view_h * BG_SHIFT_UP, -BG_DISTANCE)
+
+
+# -----------------------------------------------------------------------------
+# Paint colour
+# -----------------------------------------------------------------------------
+
+func set_paint_color(color: Color, animate: bool = true) -> void:
+	_paint_color = color
+	if _color_tween and _color_tween.is_valid():
+		_color_tween.kill()
+	var from: Array[Color] = []
+	for m in _paint_mats:
+		# A baked colour texture would tint the new colour, so drop it once.
+		if m.albedo_texture != null:
+			m.albedo_texture = null
+			m.albedo_color = color
+		from.append(m.albedo_color)
+	if animate:
+		_color_tween = create_tween()
+		_color_tween.tween_method(_blend_paint.bind(from, color), 0.0, 1.0, 0.35)
+	else:
+		_blend_paint(1.0, from, color)
+	paint_color_changed.emit(color)
+
+
+func _blend_paint(t: float, from: Array, to: Color) -> void:
+	for i in _paint_mats.size():
+		_paint_mats[i].albedo_color = (from[i] as Color).lerp(to, t)
+
+
+func _collect_paint_materials() -> void:
+	_paint_mats.clear()
+	_paint_shared.clear()
+	var car := get_node_or_null("GenericSUV_v4_lights")
+	if car == null:
+		push_warning("Car node 'GenericSUV_v4_lights' not found")
+		return
+	_scan_for_paint(car)
+	print("PAINT MATERIALS FOUND: ", _paint_mats.size())
+
+
+func _scan_for_paint(node: Node) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		if mi.mesh != null:
+			for i in mi.mesh.get_surface_count():
+				var mat := mi.get_active_material(i) as BaseMaterial3D
+				if mat == null or not PAINT_MATERIAL_NAMES.has(mat.resource_name):
+					continue
+				# One shared copy per original, so every part changes together.
+				if not _paint_shared.has(mat):
+					var copy := mat.duplicate() as BaseMaterial3D
+					_paint_shared[mat] = copy
+					_paint_mats.append(copy)
+				mi.set_surface_override_material(i, _paint_shared[mat])
+	for child in node.get_children():
+		_scan_for_paint(child)
 
 
 # -----------------------------------------------------------------------------
@@ -242,6 +358,7 @@ func _show_panel_page(page: String) -> void:
 			_add_page_button("Camera views", "camera")
 			_add_page_button("Doors", "doors")
 			_add_page_button("Wheels", "wheels")
+			_add_page_button("Paint color", "colors")
 			_add_page_button("Settings", "settings")
 		"camera":
 			_page_title.text = "CAMERA VIEWS"
@@ -262,6 +379,9 @@ func _show_panel_page(page: String) -> void:
 			_add_wheel_row("Front right wheel", "tire_fr")
 			_add_wheel_row("Rear left wheel", "tire_rl")
 			_add_wheel_row("Rear right wheel", "tire_rr")
+		"colors":
+			_page_title.text = "PAINT COLOR"
+			_add_color_controls()
 		"settings":
 			_page_title.text = "CAMERA SETTINGS"
 			_add_settings_controls()
@@ -329,6 +449,38 @@ func _add_wheel_row(caption: String, view_name: String) -> void:
 	focus_button.custom_minimum_size = Vector2(90, 42)
 	focus_button.pressed.connect(focus_view.bind(view_name))
 	row.add_child(focus_button)
+
+
+func _add_color_controls() -> void:
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	_page_container.add_child(grid)
+	for color_name in PAINT_COLORS:
+		var color: Color = PAINT_COLORS[color_name]
+		var swatch := Button.new()
+		swatch.custom_minimum_size = Vector2(56, 56)
+		swatch.tooltip_text = color_name
+		for state in ["normal", "hover", "pressed", "focus"]:
+			var sb := StyleBoxFlat.new()
+			sb.bg_color = color
+			sb.set_corner_radius_all(28)
+			sb.set_border_width_all(3 if state != "normal" else 1)
+			sb.border_color = Color.WHITE if state != "normal" else Color(1, 1, 1, 0.35)
+			swatch.add_theme_stylebox_override(state, sb)
+		swatch.pressed.connect(set_paint_color.bind(color))
+		grid.add_child(swatch)
+
+	var custom_label := Label.new()
+	custom_label.text = "Custom color"
+	_page_container.add_child(custom_label)
+	var picker := ColorPickerButton.new()
+	picker.color = _paint_color
+	picker.custom_minimum_size = Vector2(0, 44)
+	picker.edit_alpha = false
+	picker.color_changed.connect(set_paint_color.bind(false))
+	_page_container.add_child(picker)
 
 
 func _add_settings_controls() -> void:
@@ -421,6 +573,7 @@ func _connect_android_bridge() -> void:
 	_connect_bridge_signal("orbit_command", Callable(self, "_on_bridge_orbit_command"))
 	_connect_bridge_signal("zoom_command", Callable(self, "_on_bridge_zoom_command"))
 	_connect_bridge_signal("auto_rotate_command", Callable(self, "_on_bridge_auto_rotate_command"))
+	_connect_bridge_signal("color_command", Callable(self, "_on_bridge_color_command"))
 	print("CarBridge connected")
 
 
@@ -448,6 +601,9 @@ func _on_bridge_zoom_command(fov: float) -> void:
 
 func _on_bridge_auto_rotate_command(enabled: bool) -> void:
 	set_auto_rotate(enabled)
+
+func _on_bridge_color_command(hex: String) -> void:
+	set_paint_color(Color.html(hex))
 
 
 # -----------------------------------------------------------------------------

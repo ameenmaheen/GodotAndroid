@@ -42,3 +42,4 @@ exports/
 *.wasm
 *.js
 *.html
+*.zip
